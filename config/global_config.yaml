@@ -8,11 +8,14 @@ data:
 #  embedding_path: /Users/han/embeddings/sgns.target.word-character.char1-2.dynwin5.thr10.neg5.dim300.iter5.bz2
 
   model_path: data/model-weight.pt
+  rerank_model_path: data/rerank-model-weight.pt
   checkpoint_path: data/checkpoint
 
 global:
   random_seed: 123
   num_data_workers: 5   # for data loader
+  enable_rerank: True
+  rank_k: 5
 
 preprocess:
   word_embedding_size: 300

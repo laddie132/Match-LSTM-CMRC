@@ -10,9 +10,8 @@ import logging
 import argparse
 from dataset import Dataset
 from models import *
-from utils.load_config import init_logging, read_config
+from utils import init_logging, read_config, eval_on_model, beam_search
 from models.loss import MyNLLLoss
-from utils.eval import eval_on_model
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +43,15 @@ def test(config_path, out_path):
     model = MatchLSTMPlus(dataset_h5_path)
     model = model.to(device)
     model.eval()  # let training = False, make sure right dropout
+    criterion = MyNLLLoss()
+
+    model_rerank = None
+    rank_k = global_config['global']['rank_k']
+    if global_config['global']['enable_rerank']:
+        model_rerank = ReRanker(dataset_h5_path)
+        model_rerank = model_rerank.to(device)
+        model_rerank.eval()
+        criterion = torch.nn.NLLLoss()
 
     # load model weight
     logger.info('loading model weight...')
@@ -55,6 +63,15 @@ def test(config_path, out_path):
         weight = torch.load(model_weight_path, map_location=lambda storage, loc: storage.cuda())
     model.load_state_dict(weight, strict=False)
 
+    if global_config['global']['rank_k']:
+        rerank_weight_path = global_config['data']['rerank_model_path']
+        assert os.path.exists(rerank_weight_path), "not found rerank model weight file on '%s'" % rerank_weight_path
+        logger.info('loading rerank model weight...')
+        weight = torch.load(rerank_weight_path, map_location=lambda storage, loc: storage)
+        if enable_cuda:
+            weight = torch.load(rerank_weight_path, map_location=lambda storage, loc: storage.cuda())
+        model_rerank.load_state_dict(weight, strict=False)
+
     # forward
     logger.info('forwarding...')
 
@@ -65,12 +82,13 @@ def test(config_path, out_path):
 
     # to just evaluate score or write answer to file
     if out_path is None:
-        criterion = MyNLLLoss()
         score_em, score_f1, sum_loss = eval_on_model(model=model,
                                                      criterion=criterion,
                                                      batch_data=batch_dev_data,
                                                      epoch=None,
-                                                     device=device)
+                                                     device=device,
+                                                     model_rerank=model_rerank,
+                                                     rank_k=rank_k)
         logger.info("test: ave_score_em=%.2f, ave_score_f1=%.2f, sum_loss=%.5f" % (score_em, score_f1, sum_loss))
     else:
         context_right_space = dataset.get_all_ct_right_space_dev()
@@ -78,7 +96,9 @@ def test(config_path, out_path):
                                        batch_data=batch_dev_data,
                                        device=device,
                                        id_to_word_func=dataset.sentence_id2word,
-                                       right_space=context_right_space)
+                                       right_space=context_right_space,
+                                       model_rerank=model_rerank,
+                                       rank_k=rank_k)
         samples_id = dataset.get_all_samples_id_dev()
         ans_with_id = dict(zip(samples_id, predict_ans))
 
@@ -89,7 +109,7 @@ def test(config_path, out_path):
     logging.info('finished.')
 
 
-def predict_on_model(model, batch_data, device, id_to_word_func, right_space):
+def predict_on_model(model, batch_data, device, id_to_word_func, right_space, model_rerank, rank_k):
     batch_cnt = len(batch_data)
     answer = []
 
@@ -101,7 +121,14 @@ def predict_on_model(model, batch_data, device, id_to_word_func, right_space):
 
         # forward
         batch_input = batch[:len(batch) - 1]
-        _, tmp_ans_range, _ = model.forward(*batch_input)
+        tmp_ans_prop, tmp_ans_range, _ = model.forward(*batch_input)
+
+        if model_rerank is not None:
+            cand_ans_range = beam_search(tmp_ans_prop, k=rank_k)
+
+            context = batch_input[0]
+            question = batch_input[1]
+            cand_score, tmp_ans_range = model_rerank(context, question, cand_ans_range)
 
         tmp_context_ans = zip(bat_context.cpu().data.numpy(),
                               tmp_ans_range.cpu().data.numpy())

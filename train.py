@@ -13,7 +13,7 @@ from models import *
 from models.loss import MyNLLLoss, RLLoss
 from utils.load_config import init_logging, read_config
 from utils.eval import eval_on_model
-from utils.functions import pop_dict_keys
+from utils.functions import pop_dict_keys, beam_search, select_from_candidate
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +43,13 @@ def train(config_path):
     model = model.to(device)
     criterion = MyNLLLoss()
 
+    model_rerank = None
+    rank_k = global_config['global']['rank_k']
+    if global_config['global']['enable_rerank']:
+        model_rerank = ReRanker(dataset_h5_path)
+        model_rerank = model_rerank.to(device)
+        criterion = torch.nn.NLLLoss()
+
     # optimizer
     optimizer_choose = global_config['train']['optimizer']
     optimizer_lr = global_config['train']['learning_rate']
@@ -70,6 +77,14 @@ def train(config_path):
         # weight = pop_dict_keys(weight, ['pointer', 'init_ptr_hidden'])  # partial initial weight
         model.load_state_dict(weight, strict=False)
 
+    rerank_weight_path = global_config['data']['rerank_model_path']
+    if global_config['global']['rank_k'] and os.path.exists(rerank_weight_path):
+        logger.info('loading existing rerank weight...')
+        weight = torch.load(rerank_weight_path, map_location=lambda storage, loc: storage)
+        if enable_cuda:
+            weight = torch.load(rerank_weight_path, map_location=lambda storage, loc: storage.cuda())
+        model_rerank.load_state_dict(weight, strict=False)
+
     # training arguments
     logger.info('start training...')
     train_batch_size = global_config['train']['batch_size']
@@ -92,7 +107,9 @@ def train(config_path):
                                   batch_data=batch_train_data,
                                   epoch=epoch,
                                   clip_grad_max=clip_grad_max,
-                                  device=device)
+                                  device=device,
+                                  model_rerank=model_rerank,
+                                  rank_k=rank_k)
         logger.info('epoch=%d, sum_loss=%.5f' % (epoch, sum_loss))
 
         # evaluate
@@ -102,24 +119,33 @@ def train(config_path):
                                                                        criterion=criterion,
                                                                        batch_data=batch_dev_data,
                                                                        epoch=epoch,
-                                                                       device=device)
+                                                                       device=device,
+                                                                       model_rerank=model_rerank,
+                                                                       rank_k=rank_k)
             valid_avg = (valid_score_em + valid_score_f1) / 2
         logger.info("epoch=%d, ave_score_em=%.2f, ave_score_f1=%.2f, sum_loss=%.5f" %
                     (epoch, valid_score_em, valid_score_f1, valid_loss))
 
         # save model when best avg score
         if valid_avg > best_avg:
-            save_model(model,
-                       epoch=epoch,
-                       model_weight_path=global_config['data']['model_path'],
-                       checkpoint_path=global_config['data']['checkpoint_path'])
-            logger.info("saving model weight on epoch=%d" % epoch)
+            if model_rerank is not None:
+                save_model(model_rerank,
+                           epoch=epoch,
+                           model_weight_path=global_config['data']['rerank_model_path'],
+                           checkpoint_path=global_config['data']['checkpoint_path'])
+                logging.info("saving rerank model weight on epoch=%d" % epoch)
+            else:
+                save_model(model,
+                           epoch=epoch,
+                           model_weight_path=global_config['data']['model_path'],
+                           checkpoint_path=global_config['data']['checkpoint_path'])
+                logger.info("saving model weight on epoch=%d" % epoch)
             best_avg = valid_avg
 
     logger.info('finished.')
 
 
-def train_on_model(model, criterion, optimizer, batch_data, epoch, clip_grad_max, device):
+def train_on_model(model, criterion, optimizer, batch_data, epoch, clip_grad_max, device, model_rerank=None, rank_k=5):
     """
     train on every batch
     :param enable_char:
@@ -133,6 +159,8 @@ def train_on_model(model, criterion, optimizer, batch_data, epoch, clip_grad_max
     :param device:
     :return:
     """
+    enable_rerank = True if model_rerank is not None else False
+
     batch_cnt = len(batch_data)
     sum_loss = 0.
     for i, batch in enumerate(batch_data):
@@ -142,12 +170,23 @@ def train_on_model(model, criterion, optimizer, batch_data, epoch, clip_grad_max
         batch = [x.to(device) if x is not None else x for x in batch]
         bat_answer_range = batch[-1]
 
-        # forward
+        # forward and get loss
         batch_input = batch[:len(batch)-1]
-        ans_range_prop, _, _ = model.forward(*batch_input)
+        if enable_rerank:
+            with torch.no_grad():
+                ans_range_prop, _, _ = model.forward(*batch_input)
+            cand_ans_range = beam_search(ans_range_prop, k=rank_k)
 
-        # get loss
-        loss = criterion.forward(ans_range_prop, bat_answer_range)
+            context = batch_input[0]
+            question = batch_input[1]
+            cand_score, _ = model_rerank(context, question, cand_ans_range)
+
+            cand_k_closest = select_from_candidate(cand_ans_range, bat_answer_range)
+            loss = criterion(cand_score, cand_k_closest)
+        else:
+            ans_range_prop, _, _ = model.forward(*batch_input)
+            loss = criterion.forward(ans_range_prop, bat_answer_range)
+
         loss.backward()
 
         torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad_max)  # fix gradient explosion

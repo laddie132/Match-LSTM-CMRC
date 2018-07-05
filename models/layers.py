@@ -724,93 +724,6 @@ class SFU(torch.nn.Module):
         return o
 
 
-class MemPtrNet(torch.nn.Module):
-    """
-    memory pointer net
-    Args:
-        - input_size: zs and hc size
-        - hidden_size:
-        - dropout_p:
-    Inputs:
-        - zs: (batch, input_size)
-        - hc: (seq_len, batch, input_size)
-        - hc_mask: (batch, seq_len)
-    Outputs:
-        - ans_out: (ans_len, batch, seq_len)
-        - zs_new: (batch, input_size)
-    """
-
-    def __init__(self, input_size, hidden_size, dropout_p):
-        super(MemPtrNet, self).__init__()
-
-        self.start_net = ForwardNet(input_size=input_size * 3, hidden_size=hidden_size, dropout_p=dropout_p)
-        self.start_sfu = SFU(input_size, input_size)
-        self.end_net = ForwardNet(input_size=input_size * 3, hidden_size=hidden_size, dropout_p=dropout_p)
-        self.end_sfu = SFU(input_size, input_size)
-
-        self.dropout = torch.nn.Dropout(dropout_p)
-
-    def forward(self, hc, hc_mask, zs):
-        hc = self.dropout(hc)
-
-        # start position
-        zs_ep = zs.unsqueeze(0).expand(hc.size())  # (seq_len, batch, input_size)
-        x = torch.cat((hc, zs_ep, hc * zs_ep), dim=-1)  # (seq_len, batch, input_size*3)
-        start_p = self.start_net(x, hc_mask)  # (batch, seq_len)
-
-        us = start_p.unsqueeze(1).bmm(hc.transpose(0, 1)).squeeze(1)  # (batch, input_size)
-        ze = self.start_sfu(zs, us)  # (batch, input_size)
-
-        # end position
-        ze_ep = ze.unsqueeze(0).expand(hc.size())
-        x = torch.cat((hc, ze_ep, hc * ze_ep), dim=-1)
-        end_p = self.end_net(x, hc_mask)
-
-        ue = end_p.unsqueeze(1).bmm(hc.transpose(0, 1)).squeeze(1)
-        zs_new = self.end_sfu(ze, ue)
-
-        ans_out = torch.stack([start_p, end_p], dim=0)  # (ans_len, batch, seq_len)
-
-        # make sure not nan loss
-        new_mask = 1 - hc_mask.unsqueeze(0).type(torch.uint8)
-        ans_out.masked_fill_(new_mask, 1e-6)
-
-        return ans_out, zs_new
-
-
-class ForwardNet(torch.nn.Module):
-    """
-    one hidden layer and one softmax layer.
-    Args:
-        - input_size:
-        - hidden_size:
-        - output_size:
-        - dropout_p:
-    Inputs:
-        - x: (seq_len, batch, input_size)
-        - x_mask: (batch, seq_len)
-    Outputs:
-        - beta: (batch, seq_len)
-    """
-
-    def __init__(self, input_size, hidden_size, dropout_p):
-        super(ForwardNet, self).__init__()
-
-        self.linear_h = torch.nn.Linear(input_size, hidden_size)
-        self.linear_o = torch.nn.Linear(hidden_size, 1)
-
-        self.dropout = torch.nn.Dropout(p=dropout_p)
-
-    def forward(self, x, x_mask):
-        h = F.relu(self.linear_h(x))
-        h = self.dropout(h)
-        o = self.linear_o(h)
-        o = o.squeeze(2).transpose(0, 1)  # (batch, seq_len)
-
-        beta = masked_softmax(o, x_mask, dim=1)
-        return beta
-
-
 class LinearFusion(torch.nn.Module):
     """
     Linear Fusion with relu function
@@ -826,7 +739,7 @@ class LinearFusion(torch.nn.Module):
 
     def __init__(self, input_size, dropout_p):
         super(LinearFusion, self).__init__()
-        self.linear = torch.nn.Linear(input_size, 4*input_size)
+        self.linear = torch.nn.Linear(4*input_size, input_size)
 
         self.dropout = torch.nn.Dropout(p=dropout_p)
 
@@ -836,9 +749,9 @@ class LinearFusion(torch.nn.Module):
         return m
 
 
-class LinearSoftmax(torch.nn.Module):
+class LinearLogSoftmax(torch.nn.Module):
     """
-    Linear Softmax with tanh function
+    Linear LogSoftmax with tanh function
 
     Args:
         - input_size:
@@ -848,13 +761,13 @@ class LinearSoftmax(torch.nn.Module):
         - output: (batch, k)
     """
     def __init__(self, input_size):
-        super(LinearSoftmax, self).__init__()
+        super(LinearLogSoftmax, self).__init__()
         self.linear_r = torch.nn.Linear(input_size, input_size)
         self.linear_o = torch.nn.Linear(input_size, 1)
 
     def forward(self, x):
         r = F.tanh(self.linear_r(x))
         o_linear = self.linear_o(r).squeeze(-1).transpose(0, 1)  # (batch, k)
-        o = F.softmax(o_linear, dim=-1)
+        o = F.log_softmax(o_linear, dim=-1)
 
         return o

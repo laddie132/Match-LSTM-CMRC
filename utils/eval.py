@@ -5,12 +5,12 @@ __author__ = 'han'
 
 import torch
 import logging
-from dataset.preprocess_squad import PreprocessSquad
+from utils.functions import beam_search, select_from_candidate
 
 logger = logging.getLogger(__name__)
 
 
-def eval_on_model(model, criterion, batch_data, epoch, device):
+def eval_on_model(model, criterion, batch_data, epoch, device, model_rerank=None, rank_k=None):
     """
     evaluate on a specific trained model
     :param model: model with weight loaded
@@ -37,29 +37,44 @@ def eval_on_model(model, criterion, batch_data, epoch, device):
         batch_input = batch[:len(batch) - 1]
         tmp_ans_prop, tmp_ans_range, _ = model.forward(*batch_input)
 
+        if model_rerank is not None:
+            cand_ans_range = beam_search(tmp_ans_prop, k=rank_k)
+
+            context = batch_input[0]
+            question = batch_input[1]
+            cand_score, tmp_ans_range = model_rerank(context, question, cand_ans_range)
+
+            cand_k_closest = select_from_candidate(cand_ans_range, bat_answer_range)
+            batch_loss = criterion(cand_score, cand_k_closest)
+        else:
+            batch_loss = criterion.forward(tmp_ans_prop, bat_answer_range[:, 0:2])
+
         tmp_size = bat_answer_range.shape[0]
         dev_data_size += tmp_size
 
-        # get loss
-        batch_loss = criterion.forward(tmp_ans_prop, bat_answer_range[:, 0:2])
         sum_loss += batch_loss.item() * tmp_size
 
         # calculate the mean em and f1 score
-        bat_em = None
-        bat_f1 = None
-        for i in range(tmp_ans_range.shape[1]):
-            cur_bat_em = evaluate_em(tmp_ans_range[:, i, :], bat_answer_range)
-            cur_bat_f1 = evaluate_f1(tmp_ans_range[:, i, :], bat_answer_range)
 
-            if bat_em is not None:
-                bat_em = torch.stack([bat_em, cur_bat_em], dim=1)
-                bat_em, _ = torch.max(bat_em, dim=1)
+        # for test beam_search
+        # bat_em = None
+        # bat_f1 = None
+        # for i in range(tmp_ans_range.shape[1]):
+        #     cur_bat_em = evaluate_em(tmp_ans_range[:, i, :], bat_answer_range)
+        #     cur_bat_f1 = evaluate_f1(tmp_ans_range[:, i, :], bat_answer_range)
+        #
+        #     if bat_em is not None:
+        #         bat_em = torch.stack([bat_em, cur_bat_em], dim=1)
+        #         bat_em, _ = torch.max(bat_em, dim=1)
+        #
+        #         bat_f1 = torch.stack([bat_f1, cur_bat_f1], dim=1)
+        #         bat_f1, _ = torch.max(bat_f1, dim=1)
+        #     else:
+        #         bat_em = cur_bat_em
+        #         bat_f1 = cur_bat_f1
 
-                bat_f1 = torch.stack([bat_f1, cur_bat_f1], dim=1)
-                bat_f1, _ = torch.max(bat_f1, dim=1)
-            else:
-                bat_em = cur_bat_em
-                bat_f1 = cur_bat_f1
+        bat_em = evaluate_em(tmp_ans_range, bat_answer_range)
+        bat_f1 = evaluate_f1(tmp_ans_range, bat_answer_range)
 
         num_em += bat_em.sum().item()
         score_f1 += bat_f1.sum().item()
@@ -90,7 +105,7 @@ def evaluate_em(y_pred, y_true):
     exact match score
     :param y_pred: (batch, answer_len)
     :param y_true: (batch, condidate_answer_len)
-    :return:
+    :return: (batch,)
     """
     assert y_pred.shape[1] == 2
 
@@ -115,7 +130,7 @@ def evaluate_f1(y_pred, y_true):
     :param context_tokens: context with word tokens
     :param y_pred: (batch, answer_len)
     :param y_true: (batch, condidate_answer_len)
-    :return:
+    :return: (batch,)
     """
     assert y_pred.shape[1] == 2
 

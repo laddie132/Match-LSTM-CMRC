@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
 from functools import reduce
+import utils
 
 
 def pad_sequences(sequences, maxlen=None, dtype='int32', padding='pre', truncating='pre', value=0.):
@@ -432,3 +433,21 @@ def multi_scale_ptr(ptr_net, ptr_init_h, hr, hr_mask, scales):
     ans_range_prop = ans_range_prop.transpose(0, 1)  # (batch, answer_len, seq_len)
 
     return ans_range_prop
+
+
+def select_from_candidate(cand_ans_range, truth_ans_range):
+    """
+    select the candidate answer that is closest to the real answer
+    :param cand_ans_range: (batch, k, ans_len)
+    :param truth_ans_range: (batch, three_ans_len)
+    :return: (batch,)
+    """
+    cand_f1 = []
+    for i in range(cand_ans_range.shape[1]):
+        tmp_f1 = utils.evaluate_f1(cand_ans_range[:, i, :], truth_ans_range)
+        cand_f1.append(tmp_f1)
+
+    cand_f1 = torch.stack(cand_f1, dim=-1)      # (batch, k)
+    _, cand_closest = torch.max(cand_f1, dim=-1)    # todo: consider several truth answer, f1=1.0
+
+    return cand_closest
