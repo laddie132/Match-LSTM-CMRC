@@ -31,7 +31,7 @@ class ReRanker(torch.nn.Module):
         hidden_size = 150
         hidden_mode = 'GRU'
         emb_dropout_p = 0.1
-        dropout_p = 0.2
+        dropout_p = 0.4
 
         encoder_bidirection = True
         encoder_direction_num = 2 if encoder_bidirection else 1
@@ -97,7 +97,7 @@ class ReRanker(torch.nn.Module):
                 new_zeros = qus_ans[j].new_zeros((zeros_len, hidden_size))
                 qus_ans[j] = torch.cat([qus_ans[j], new_zeros], dim=0)
 
-                cur_mask = torch.cat([torch.ones((cur_len,)), torch.zeros((zeros_len,))], dim=0)
+                cur_mask = torch.cat([qus_ans[j].new_ones((cur_len,)), qus_ans[j].new_zeros((zeros_len,))], dim=0)
                 qus_ans_mask.append(cur_mask)
             qus_ans = torch.stack(qus_ans, dim=1)   # (qus_ans_len, batch, hidden_size)
             qus_ans_mask = torch.stack(qus_ans_mask, dim=0)   # (batch, qus_ans_len)

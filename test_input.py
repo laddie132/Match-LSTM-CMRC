@@ -59,7 +59,7 @@ def main():
     weight = torch.load(model_weight_path, map_location=lambda storage, loc: storage)
     model.load_state_dict(weight, strict=False)
 
-    if global_config['global']['rank_k']:
+    if global_config['global']['enable_rerank']:
         rerank_weight_path = global_config['data']['rerank_model_path']
         assert os.path.exists(rerank_weight_path), "not found rerank model weight file on '%s'" % rerank_weight_path
         logger.info('loading rerank model weight...')

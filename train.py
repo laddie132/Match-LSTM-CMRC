@@ -78,7 +78,7 @@ def train(config_path):
         model.load_state_dict(weight, strict=False)
 
     rerank_weight_path = global_config['data']['rerank_model_path']
-    if global_config['global']['rank_k'] and os.path.exists(rerank_weight_path):
+    if global_config['global']['enable_rerank'] and os.path.exists(rerank_weight_path):
         logger.info('loading existing rerank weight...')
         weight = torch.load(rerank_weight_path, map_location=lambda storage, loc: storage)
         if enable_cuda:
