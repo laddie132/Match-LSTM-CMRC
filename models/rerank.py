@@ -108,8 +108,6 @@ class ReRanker(torch.nn.Module):
 
             # (qus_ans_len, batch, hidden_size)
             ans_measure, _ = self.measure_rnn(m, qus_ans_mask)
-            ans_measure = qus_ans_mask.transpose(0, 1).unsqueeze(2) * ans_measure
-
             ans_s, _ = torch.max(ans_measure, dim=0)    # (batch, hidden_size)
             cand_s.append(ans_s)
         cand_s = torch.stack(cand_s, dim=0)  # (k, batch, hidden_size)

@@ -42,6 +42,7 @@ def train(config_path):
     model = MatchLSTMPlus(dataset_h5_path)
     model = model.to(device)
     criterion = MyNLLLoss()
+    optimizer_param = filter(lambda p: p.requires_grad, model.parameters())
 
     model_rerank = None
     rank_k = global_config['global']['rank_k']
@@ -49,11 +50,11 @@ def train(config_path):
         model_rerank = ReRanker(dataset_h5_path)
         model_rerank = model_rerank.to(device)
         criterion = torch.nn.NLLLoss()
+        optimizer_param = filter(lambda p: p.requires_grad, model_rerank.parameters())
 
     # optimizer
     optimizer_choose = global_config['train']['optimizer']
     optimizer_lr = global_config['train']['learning_rate']
-    optimizer_param = filter(lambda p: p.requires_grad, model.parameters())
 
     if optimizer_choose == 'adamax':
         optimizer = optim.Adamax(optimizer_param)
@@ -101,6 +102,8 @@ def train(config_path):
     for epoch in range(global_config['train']['epoch']):
         # train
         model.train()  # set training = True, make sure right dropout
+        if global_config['global']['enable_rerank']:
+            model_rerank.train()
         sum_loss = train_on_model(model=model,
                                   criterion=criterion,
                                   optimizer=optimizer,
@@ -115,6 +118,8 @@ def train(config_path):
         # evaluate
         with torch.no_grad():
             model.eval()  # let training = False, make sure right dropout
+            if global_config['global']['enable_rerank']:
+                model_rerank.eval()
             valid_score_em, valid_score_f1, valid_loss = eval_on_model(model=model,
                                                                        criterion=criterion,
                                                                        batch_data=batch_dev_data,
@@ -190,6 +195,7 @@ def train_on_model(model, criterion, optimizer, batch_data, epoch, clip_grad_max
         loss.backward()
 
         torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad_max)  # fix gradient explosion
+        torch.nn.utils.clip_grad_norm_(model_rerank.parameters(), clip_grad_max)  # fix gradient explosion
         optimizer.step()  # update parameters
 
         # logging
