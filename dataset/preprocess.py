@@ -147,9 +147,14 @@ class Preprocess:
             if self._use_ent:
                 ent = doc_text.ent[i]
                 if ent not in self._ent2id:
-                    self._ent2id[ent] = len(self._ent2id)
-                    self._meta_data['id2ent'].append(ent)
-                sentence['ent'].append(self._ent2id[ent])
+                    if self._train_mode:
+                        self._ent2id[ent] = len(self._ent2id)
+                        self._meta_data['id2ent'].append(ent)
+                        sentence['ent'].append(self._ent2id[ent])
+                    else:
+                        sentence['ent'].append(1)
+                else:
+                    sentence['ent'].append(self._ent2id[ent])
 
         return sentence
 
@@ -318,8 +323,10 @@ class Preprocess:
     def run_test(self, test_json_path):
         self._train_mode = False
 
-        logger.info('handle embeddings file...')
+        logging.info('read additional featuers from h5 file')
         self._read_add_features()
+
+        logger.info('handle embeddings file...')
         self._handle_emb()
 
         logger.info('read dataset json...')

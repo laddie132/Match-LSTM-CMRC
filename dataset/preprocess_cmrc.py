@@ -57,7 +57,7 @@ class PreprocessCMRC(Preprocess):
             if training and len(cur_context_doc) > self._ignore_max_len:  # some context token len too large
                 continue
 
-            if self._use_char:
+            if self._use_char and self._train_mode:
                 self._update_to_char(cur_context)
 
             cur_context_ids = self._doctext_to_id(cur_context_doc)
@@ -66,7 +66,7 @@ class PreprocessCMRC(Preprocess):
             for qa in cur_qas:
                 cur_question = qa['query_text']
 
-                if self._use_char:
+                if self._use_char and self._train_mode:
                     self._update_to_char(cur_question)
 
                 cur_question_doc = DocTextCh(cur_question, self.preprocess_config)
