@@ -36,6 +36,7 @@ class Preprocess:
 
         # preprocess config
         self._max_answer_len = 0
+        self._train_mode = True
 
         # temp data
         self._word2id = {self.padding: 0}
@@ -65,6 +66,8 @@ class Preprocess:
         self._dev_path = data_config['dataset']['dev_path']
         self._export_data_path = data_config['dataset_h5']
         self._emb_path = data_config['embedding_path']
+        self._emb_h5 = data_config['embedding_h5']
+        self._add_features_h5 = data_config['add_features_h5']
 
         self.preprocess_config = global_config['preprocess']
         self._ignore_max_len = self.preprocess_config['ignore_max_len']
@@ -131,11 +134,16 @@ class Preprocess:
             if self._use_pos:
                 pos = doc_text.pos[i]
                 if pos not in self._pos2id:
-                    self._pos2id[pos] = len(self._pos2id)
-                    self._meta_data['id2pos'].append(pos)
-                sentence['pos'].append(self._pos2id[pos])
+                    if self._train_mode:
+                        self._pos2id[pos] = len(self._pos2id)
+                        self._meta_data['id2pos'].append(pos)
+                        sentence['pos'].append(self._pos2id[pos])
+                    else:
+                        sentence['pos'].append(1)
+                else:
+                    sentence['pos'].append(self._pos2id[pos])
 
-            # ent
+            # ent, not used
             if self._use_ent:
                 ent = doc_text.ent[i]
                 if ent not in self._ent2id:
@@ -145,6 +153,7 @@ class Preprocess:
 
         return sentence
 
+    # not used
     def _update_to_char(self, sentence):
         """
         update char2id
@@ -162,6 +171,29 @@ class Preprocess:
         :return:
         """
         pass
+
+    def _read_add_features(self):
+        with h5py.File(self._add_features_h5, 'r') as f:
+            self._meta_data['id2char'] = np.array(f['id2char']).tolist()
+            self._char2id = dict(zip(self._meta_data['id2char'], range(len(self._meta_data['id2char']))))
+
+            self._meta_data['id2pos'] = np.array(f['id2pos']).tolist()
+            self._pos2id = dict(zip(self._meta_data['id2pos'], range(len(self._meta_data['id2pos']))))
+
+            self._meta_data['id2ent'] = np.array(f['id2ent']).tolist()
+            self._ent2id = dict(zip(self._meta_data['id2ent'], range(len(self._meta_data['id2ent']))))
+
+    def _export_add_features(self):
+        f = h5py.File(self._add_features_h5, 'w')
+        str_dt = h5py.special_dtype(vlen=str)
+
+        for key in ['id2char', 'id2pos', 'id2ent']:
+            value = np.array(self._meta_data[key], dtype=np.str)
+            meta_data = f.create_dataset(key, value.shape, dtype=str_dt, **self._compress_option)
+            meta_data[...] = value
+
+        f.flush()
+        f.close()
 
     def _export_squad_hdf5(self):
         """
@@ -211,11 +243,35 @@ class Preprocess:
         f.flush()
         f.close()
 
+    def _export_emd_hdf5(self):
+        """
+        export word embeddings to hdf5
+        :return:
+        """
+        f = h5py.File(self._emb_h5, 'w')
+        str_dt = h5py.special_dtype(vlen=str)
+
+        f.attrs['word_dict_size'] = self._attr['word_dict_size']
+        f.attrs['embedding_size'] = self._attr['embedding_size']
+
+        value = np.array(list(self._word2vec.keys()), dtype=np.str)
+        meta_data = f.create_dataset('id2word', value.shape, dtype=str_dt, **self._compress_option)
+        meta_data[...] = value
+
+        id2vec = np.array(list(self._word2vec.values()), dtype=np.float32)
+        meta_data = f.create_dataset('id2vec', id2vec.shape, dtype=id2vec.dtype, **self._compress_option)
+        meta_data[...] = id2vec
+
+        f.flush()
+        f.close()
+
     def run(self):
         """
         main function to generate hdf5 file
         :return:
         """
+        self._train_mode = True
+
         logger.info('handle embeddings file...')
         self._handle_emb()
 
@@ -243,6 +299,45 @@ class Preprocess:
             'answer_range': np.array(train_cache_nopad['answer_range']),
             'samples_id': np.array(train_cache_nopad['samples_id'])
         }
+        self._data['dev'] = {
+            'context': dict2array(dev_cache_nopad['context']),
+            'question': dict2array(dev_cache_nopad['question']),
+            'answer_range': pad_sequences(dev_cache_nopad['answer_range'],
+                                          maxlen=self._max_answer_len,
+                                          padding='post',
+                                          value=self.answer_padding_idx),
+            'samples_id': np.array(dev_cache_nopad['samples_id'])
+        }
+
+        logger.info('export to hdf5 file...')
+        self._export_squad_hdf5()
+        self._export_add_features()
+
+        logger.info('finished.')
+
+    def run_test(self, test_json_path):
+        self._train_mode = False
+
+        logger.info('handle embeddings file...')
+        self._read_add_features()
+        self._handle_emb()
+
+        logger.info('read dataset json...')
+        dev_context_qas = self._read_json(test_json_path)
+
+        logger.info('transform word to id...')
+        dev_cache_nopad = self._build_data(dev_context_qas, training=False)
+
+        self._attr['train_size'] = 0
+        self._attr['dev_size'] = len(dev_cache_nopad['answer_range'])
+        self._attr['word_dict_size'] = len(self._word2id)
+        self._attr['char_dict_size'] = len(self._char2id)
+        self._attr['pos_dict_size'] = len(self._pos2id)
+        self._attr['ent_dict_size'] = len(self._ent2id)
+        self._attr['embedding_size'] = self._embedding_size
+        self._attr['oov_word_num'] = self._oov_num
+
+        logger.info('padding id vectors...')
         self._data['dev'] = {
             'context': dict2array(dev_cache_nopad['context']),
             'question': dict2array(dev_cache_nopad['question']),

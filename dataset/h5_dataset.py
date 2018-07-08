@@ -42,7 +42,7 @@ class Dataset:
         with h5py.File(h5_path, 'r') as f:
             f_data = f['data']
 
-            for name in ['train', 'dev']:
+            for name in f_data.keys():
                 self._data[name] = {}
                 for sub_name in ['answer_range', 'samples_id']:
                     self._data[name][sub_name] = np.array(f_data[name][sub_name])

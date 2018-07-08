@@ -6,7 +6,9 @@ __author__ = 'han'
 import os
 import bz2
 import json
+import h5py
 import logging
+import numpy as np
 from .doc_text import DocTextCh, Space
 from .preprocess import Preprocess
 
@@ -155,36 +157,43 @@ class PreprocessCMRC(Preprocess):
 
     def _handle_emb(self):
         """
-        handle glove embeddings, restore embeddings with dictionary
+        handle chinese embeddings, restore embeddings with dictionary
         :return:
         """
-        logger.debug("read embeddings from text file %s" % self._emb_path)
-        if not os.path.exists(self._emb_path):
-            raise ValueError('embeddings file "%s" not existed' % self._emb_path)
+        if os.path.exists(self._emb_h5):
+            logging.info('read embedding from h5 file')
+            with h5py.File(self._emb_h5, 'r') as f:
+                self._word2vec = dict(zip(np.array(f['id2word']).tolist(), np.array(f['id2vec']).tolist()))
+        else:
+            logger.debug("read embeddings from text file %s" % self._emb_path)
+            if not os.path.exists(self._emb_path):
+                raise ValueError('embeddings file "%s" not existed' % self._emb_path)
 
-        word_num = 0
-        embedding_size = 0
-        embedding_num = 0
+            word_num = 0
+            # some too long word maybe error, decode after read bytes
+            with bz2.open(self._emb_path, mode='rb') as f:
+                for line_b in f:
+                    try:
+                        line = line_b.decode('utf-8')
+                    except UnicodeDecodeError:
+                        # line = line_b.decode('latin-1')
+                        continue
 
-        # some too long word maybe error, decode after read bytes
-        with bz2.open(self._emb_path, mode='rb') as f:
-            for line_b in f:
-                try:
-                    line = line_b.decode('utf-8')
-                except UnicodeDecodeError:
-                    # line = line_b.decode('latin-1')
-                    continue
+                    line_split = line.strip().split(' ')
+                    if word_num == 0:
+                        embedding_num = int(line_split[0])
+                        embedding_size = int(line_split[1])
+                        self._attr['word_dict_size'] = embedding_num
+                        self._attr['embedding_size'] = embedding_size
+                        logger.info('Embedding size: %d' % embedding_size)
+                        logger.info('Embedding num: %d' % embedding_num)
 
-                line_split = line.strip().split(' ')
-                if word_num == 0:
-                    embedding_num = int(line_split[0])
-                    embedding_size = int(line_split[1])
-                    logger.info('Embedding size: %d' % embedding_size)
-                    logger.info('Embedding num: %d' % embedding_num)
+                    else:
+                        self._word2vec[line_split[0]] = [float(x) for x in line_split[1:]]
 
-                else:
-                    self._word2vec[line_split[0]] = [float(x) for x in line_split[1:]]
+                    word_num += 1
+                    if word_num % 10000 == 0:
+                        logger.info('handle word No.%d' % word_num)
 
-                word_num += 1
-                if word_num % 10000 == 0:
-                    logger.info('handle word No.%d' % word_num)
+            logging.info('export embedding to hdf5 file')
+            self._export_emd_hdf5()
