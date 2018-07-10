@@ -194,8 +194,10 @@ def train_on_model(model, criterion, optimizer, batch_data, epoch, clip_grad_max
 
         loss.backward()
 
-        torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad_max)  # fix gradient explosion
-        torch.nn.utils.clip_grad_norm_(model_rerank.parameters(), clip_grad_max)  # fix gradient explosion
+        if enable_rerank:
+            torch.nn.utils.clip_grad_norm_(model_rerank.parameters(), clip_grad_max)  # fix gradient explosion
+        else:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad_max)  # fix gradient explosion
         optimizer.step()  # update parameters
 
         # logging
