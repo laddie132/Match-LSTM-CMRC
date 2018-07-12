@@ -3,6 +3,7 @@
 
 __author__ = 'han'
 
+import json
 import torch
 import matplotlib.pyplot as plt
 import numpy as np
@@ -451,3 +452,35 @@ def select_from_candidate(cand_ans_range, truth_ans_range):
     _, cand_closest = torch.max(cand_f1, dim=-1)    # todo: consider several truth answer, f1=1.0
 
     return cand_closest
+
+
+def ensemble_ans(ans_in_pathes, ans_out_path):
+    """
+    votes from several single models
+    :param ans_in_pathes:
+    :param ans_out_path:
+    :return:
+    """
+    all_ans = []
+    for p in ans_in_pathes:
+        with open(p, 'r') as f:
+            all_ans.append(json.load(f))
+
+    ans_ids = all_ans[0].keys()
+    ans_out = {}
+
+    for i in ans_ids:
+        tmp_ans = {}
+
+        # find answers with id=i in all models
+        for cur_model in all_ans:
+            cur_ans = cur_model[i]
+            if cur_ans not in tmp_ans:
+                tmp_ans[cur_ans] = 0
+            tmp_ans[cur_ans] += 1
+
+        predict_ans = max(tmp_ans, key=lambda x: tmp_ans[x])
+        ans_out[i] = predict_ans
+
+    with open(ans_out_path, 'w') as f:
+        json.dump(ans_out, f)
