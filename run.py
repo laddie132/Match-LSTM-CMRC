@@ -3,6 +3,7 @@
 
 __author__ = 'han'
 
+import os
 import yaml
 import logging
 import argparse
@@ -14,8 +15,12 @@ from utils import init_logging, read_config, ensemble_ans
 init_logging()
 logger = logging.getLogger(__name__)
 
-EN_MODEL_NUM = 18
-TMP_PATH = 'logs/'
+EN_MODEL_NUM = 15
+TMP_PATH = '../'
+
+# for codalab
+cur_path = os.getcwd()
+out_path = cur_path[:(cur_path.index('_dependencies'))] + '/'
 
 
 def preprocess(config_path, test_json_path=None):
@@ -72,10 +77,10 @@ elif args.mode == 'test_en':
     test_en(args.config_path, args.out_path)
 elif args.mode == 'test_raw':
     preprocess(args.config_path, test_json_path=args.in_path)
-    test(config_path=args.config_path, out_path=args.out_path)
+    test(config_path=args.config_path, out_path=out_path+args.out_path)
 elif args.mode == 'test_raw_en':
     preprocess(args.config_path, test_json_path=args.in_path)
-    test_en(args.config_path, args.out_path)
+    test_en(args.config_path, out_path + args.out_path)
 else:
     raise ValueError('Unrecognized mode selected.')
 

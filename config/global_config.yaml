@@ -2,10 +2,10 @@ data:
   dataset:
     train_path: data/cmrc/cmrc2018_train.json
     dev_path: data/cmrc/cmrc2018_dev.json
-  dataset_h5: data/cmrc_embeddings.h5
+  dataset_h5: ../cmrc_embeddings.h5
 
   embedding_path: /Users/han/embeddings/sgns.merge.word.bz2
-  embedding_h5: /Users/han/embeddings/sgns.merge.word.h5
+  embedding_h5: ../match-lstm-rerank/data/sgns.merge.word.h5
 
   add_features_h5: data/add_features.h5
 
@@ -15,7 +15,7 @@ data:
 
 global:
   random_seed: 123
-  num_data_workers: 5   # for data loader
+  num_data_workers: 1   # for data loader
   enable_rerank: False
   rank_k: 3
 
@@ -31,7 +31,7 @@ preprocess:
 train:
   batch_size: 32
   valid_batch_size: 32
-  epoch: 30
+  epoch: 20
   enable_cuda: True
 
   optimizer: 'adamax'  # adam, sgd, adamax, adadelta(default is adamax)
