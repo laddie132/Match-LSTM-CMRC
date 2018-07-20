@@ -129,11 +129,13 @@ def evaluate_with_wrong(ground_truth_file, prediction_file):
                 skip_count += 1
                 continue
 
-            prediction = str(prediction_file[query_id])
+            prediction = str(list(prediction_file[query_id].keys())[0])
             tmp_f1 = calc_f1_score(answers, prediction)
             f1 += tmp_f1
             tmp_em = calc_em_score(answers, prediction)
             em += tmp_em
+
+            prediction = prediction_file[query_id]
 
             all_ans.append({'id': query_id,
                             'em': int(tmp_em),
@@ -278,6 +280,6 @@ if __name__ == '__main__':
     print('AVG: {:.3f} F1: {:.3f} EM: {:.3f} TOTAL: {} SKIP: {} FILE: {}'.format(AVG, F1, EM, TOTAL, SKIP, sys.argv[2]))
 
     with open(ans_out_file, 'w') as f:
-        json.dump(all_ans, f)
+        json.dump(all_ans, f, ensure_ascii=False)
 
     plt.show()

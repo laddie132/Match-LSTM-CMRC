@@ -311,11 +311,12 @@ def beam_search(answer_prop, k):
     cand_ans = torch.stack(cand_ans, dim=1)   # (batch, k*k, ans_len)
     cand_ans_prop = torch.cat(cand_ans_prop, dim=1)  # (batch, k*k)
 
-    _, cand_sort_idx = torch.sort(cand_ans_prop, dim=1, descending=True)    # (batch, k*k)
+    cand_sort_prop, cand_sort_idx = torch.sort(cand_ans_prop, dim=1, descending=True)    # (batch, k*k)
     cand_top_k_idx = cand_sort_idx[:, :k]
+    cand_top_k_prop = cand_sort_prop[:, :k]
     cand_ans_top_k = cand_ans.gather(1, cand_top_k_idx.unsqueeze(-1).expand(-1, -1, 2))   # (batch, k, ans_len)
 
-    return cand_ans_top_k
+    return cand_ans_top_k, cand_top_k_prop
 
 
 def flip(tensor, flip_dim=0):

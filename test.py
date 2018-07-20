@@ -123,29 +123,35 @@ def predict_on_model(model, batch_data, device, id_to_word_func, right_space, mo
         batch_input = batch[:len(batch) - 1]
         tmp_ans_prop, tmp_ans_range, _ = model.forward(*batch_input)
 
-        if model_rerank is not None:
-            cand_ans_range = beam_search(tmp_ans_prop, k=rank_k)
+        # if model_rerank is not None:
+        cand_ans_range, cand_ans_prop = beam_search(tmp_ans_prop, k=rank_k)
 
-            context = batch_input[0]
-            question = batch_input[1]
-            cand_score, tmp_ans_range = model_rerank(context, question, cand_ans_range)
+            # context = batch_input[0]
+            # question = batch_input[1]
+            # cand_score, tmp_ans_range = model_rerank(context, question, cand_ans_range)
 
         tmp_context_ans = zip(bat_context.cpu().data.numpy(),
-                              tmp_ans_range.cpu().data.numpy())
+                              cand_ans_range.cpu().data.numpy())
 
         # generate initial answer text
         i = 0
-        for c, a in tmp_context_ans:
+        for c, k_a in tmp_context_ans:
             cur_no = cnt + i
-            tmp_ans = id_to_word_func(c[a[0]:(a[1] + 1)])
-            cur_space = right_space[cur_no][a[0]:(a[1] + 1)]
 
-            cur_ans = ''
-            for j, word in enumerate(tmp_ans):
-                cur_ans += word
-                if cur_space[j]:
-                    cur_ans += ' '
-            answer.append(cur_ans.strip())
+            k_ans = []
+            for k in range(k_a.shape[0]):
+                a = k_a[k]
+                tmp_ans = id_to_word_func(c[a[0]:(a[1] + 1)])
+                cur_space = right_space[cur_no][a[0]:(a[1] + 1)]
+
+                cur_ans = ''
+                for j, word in enumerate(tmp_ans):
+                    cur_ans += word
+                    if cur_space[j]:
+                        cur_ans += ' '
+                k_ans.append(cur_ans.strip())
+            k_ans_prop = dict(zip(k_ans, cand_ans_prop[i].cpu().data.numpy().tolist()))
+            answer.append(k_ans_prop)
             i += 1
         cnt += i
         logging.info('batch=%d/%d' % (bnum, batch_cnt))
