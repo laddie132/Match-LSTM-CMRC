@@ -408,6 +408,48 @@ class BoundaryPointer(torch.nn.Module):
         return rtn_beta
 
 
+class MultiHopBdPointer(torch.nn.Module):
+    r"""
+    Boundary Pointer Net with Multi-Hops that output start and end possible answer position in context
+    Args:
+        - input_size: The number of features in Hr
+        - hidden_size: The number of features in the hidden layer
+        - num_hops: Number of max hops
+        - dropout_p: Dropout probability
+        - enable_layer_norm: Whether use layer normalization
+
+    Inputs:
+        Hr (context_len, batch, hidden_size * num_directions): question-aware context representation
+        h_0 (batch, hidden_size): init lstm cell hidden state
+    Outputs:
+        **output** (answer_len, batch, context_len): start and end answer index possibility position in context
+    """
+
+    def __init__(self, mode, input_size, hidden_size, num_hops, dropout_p, enable_layer_norm):
+        super(MultiHopBdPointer, self).__init__()
+        self.hidden_size = hidden_size
+        self.num_hops = num_hops
+
+        self.ptr_rnn = UniBoundaryPointer(mode, input_size, hidden_size, enable_layer_norm)
+        self.dropout = torch.nn.Dropout(p=dropout_p)
+
+    def forward(self, Hr, Hr_mask, h_0=None):
+        Hr = self.dropout.forward(Hr)
+
+        beta_last = None
+        for i in range(self.num_hops):
+            beta, h_0 = self.ptr_rnn.forward(Hr, Hr_mask, h_0)
+            if beta_last is not None and (beta_last == beta).sum().item() == beta.shape[0]:  # beta not changed
+                break
+
+            beta_last = beta
+
+        new_mask = torch.neg((Hr_mask - 1) * 1e-6)  # mask replace zeros with 1e-6, make sure no gradient explosion
+        rtn_beta = beta + new_mask.unsqueeze(0)
+
+        return rtn_beta
+
+
 class MyRNNBase(torch.nn.Module):
     """
     RNN with packed sequence and dropout, only one layer
@@ -724,6 +766,93 @@ class SFU(torch.nn.Module):
         return o
 
 
+class MemPtrNet(torch.nn.Module):
+    """
+    memory pointer net
+    Args:
+        - input_size: zs and hc size
+        - hidden_size:
+        - dropout_p:
+    Inputs:
+        - zs: (batch, input_size)
+        - hc: (seq_len, batch, input_size)
+        - hc_mask: (batch, seq_len)
+    Outputs:
+        - ans_out: (ans_len, batch, seq_len)
+        - zs_new: (batch, input_size)
+    """
+
+    def __init__(self, input_size, hidden_size, dropout_p):
+        super(MemPtrNet, self).__init__()
+
+        self.start_net = ForwardNet(input_size=input_size * 3, hidden_size=hidden_size, dropout_p=dropout_p)
+        self.start_sfu = SFU(input_size, input_size)
+        self.end_net = ForwardNet(input_size=input_size * 3, hidden_size=hidden_size, dropout_p=dropout_p)
+        self.end_sfu = SFU(input_size, input_size)
+
+        self.dropout = torch.nn.Dropout(dropout_p)
+
+    def forward(self, hc, hc_mask, zs):
+        hc = self.dropout(hc)
+
+        # start position
+        zs_ep = zs.unsqueeze(0).expand(hc.size())  # (seq_len, batch, input_size)
+        x = torch.cat((hc, zs_ep, hc * zs_ep), dim=-1)  # (seq_len, batch, input_size*3)
+        start_p = self.start_net(x, hc_mask)  # (batch, seq_len)
+
+        us = start_p.unsqueeze(1).bmm(hc.transpose(0, 1)).squeeze(1)  # (batch, input_size)
+        ze = self.start_sfu(zs, us)  # (batch, input_size)
+
+        # end position
+        ze_ep = ze.unsqueeze(0).expand(hc.size())
+        x = torch.cat((hc, ze_ep, hc * ze_ep), dim=-1)
+        end_p = self.end_net(x, hc_mask)
+
+        ue = end_p.unsqueeze(1).bmm(hc.transpose(0, 1)).squeeze(1)
+        zs_new = self.end_sfu(ze, ue)
+
+        ans_out = torch.stack([start_p, end_p], dim=0)  # (ans_len, batch, seq_len)
+
+        # make sure not nan loss
+        new_mask = 1 - hc_mask.unsqueeze(0).type(torch.uint8)
+        ans_out.masked_fill_(new_mask, 1e-6)
+
+        return ans_out, zs_new
+
+
+class ForwardNet(torch.nn.Module):
+    """
+    one hidden layer and one softmax layer.
+    Args:
+        - input_size:
+        - hidden_size:
+        - output_size:
+        - dropout_p:
+    Inputs:
+        - x: (seq_len, batch, input_size)
+        - x_mask: (batch, seq_len)
+    Outputs:
+        - beta: (batch, seq_len)
+    """
+
+    def __init__(self, input_size, hidden_size, dropout_p):
+        super(ForwardNet, self).__init__()
+
+        self.linear_h = torch.nn.Linear(input_size, hidden_size)
+        self.linear_o = torch.nn.Linear(hidden_size, 1)
+
+        self.dropout = torch.nn.Dropout(p=dropout_p)
+
+    def forward(self, x, x_mask):
+        h = F.relu(self.linear_h(x))
+        h = self.dropout(h)
+        o = self.linear_o(h)
+        o = o.squeeze(2).transpose(0, 1)  # (batch, seq_len)
+
+        beta = masked_softmax(o, x_mask, dim=1)
+        return beta
+
+
 class LinearFusion(torch.nn.Module):
     """
     Linear Fusion with relu function
@@ -739,12 +868,12 @@ class LinearFusion(torch.nn.Module):
 
     def __init__(self, input_size, dropout_p):
         super(LinearFusion, self).__init__()
-        self.linear = torch.nn.Linear(4*input_size, input_size)
+        self.linear = torch.nn.Linear(4 * input_size, input_size)
 
         self.dropout = torch.nn.Dropout(p=dropout_p)
 
     def forward(self, x1, x2):
-        tmp = torch.cat([x1 * x2, x1-x2, x1, x2], dim=-1)
+        tmp = torch.cat([x1 * x2, x1 - x2, x1, x2], dim=-1)
         m = F.relu(self.linear(tmp))
         return m
 
@@ -760,6 +889,7 @@ class LinearLogSoftmax(torch.nn.Module):
     Outputs:
         - output: (batch, k)
     """
+
     def __init__(self, input_size):
         super(LinearLogSoftmax, self).__init__()
         self.linear_r = torch.nn.Linear(input_size, input_size)
@@ -771,3 +901,188 @@ class LinearLogSoftmax(torch.nn.Module):
         o = F.log_softmax(o_linear, dim=-1)
 
         return o
+
+
+class AnswerQuestionSimilar(torch.nn.Module):
+    """
+    Inputs:
+        - answer_range_prop: (ans_len, batch, context_len)
+        - context_encode: (context_len, batch, input_size)
+        - question_last: (batch, input_size)
+    Outputs:
+        - sim: (batch,)
+    """
+
+    def __init__(self, input_size, hidden_size):
+        super(AnswerQuestionSimilar, self).__init__()
+        self.linear_ct = torch.nn.Linear(input_size, hidden_size)
+        self.linear_qus = torch.nn.Linear(input_size, hidden_size)
+        self.linear_sim = torch.nn.Linear(hidden_size, 1)
+
+    def forward(self, answer_range_prop, context_encode, question_last):
+        start_prop = answer_range_prop[0]  # (batch, context_len)
+        start_context = torch.bmm(start_prop.unsqueeze(1), context_encode.transpose(0, 1)).squeeze(1)
+        end_prop = answer_range_prop[1]
+        end_context = torch.bmm(end_prop.unsqueeze(1), context_encode.transpose(0, 1)).squeeze(1)
+
+        ans_context = start_context + end_context  # (batch, input_size)
+
+        sim_hidden = F.tanh(self.linear_ct(ans_context) + self.linear_qus(question_last))  # (batch, hidden_size)
+        sim = F.sigmoid(self.linear_sim(sim_hidden)).squeeze(1)  # (batch,)
+
+        return sim
+
+
+class PositionwiseNN(torch.nn.Module):
+    def __init__(self, idim, hdim, emb_dropout_p, dropout_p):
+        super(PositionwiseNN, self).__init__()
+        self.w_0 = torch.nn.Conv1d(idim, hdim, 1)
+        self.w_1 = torch.nn.Conv1d(hdim, hdim, 1)
+        self.emb_dropout = torch.nn.Dropout(p=emb_dropout_p)
+        self.dropout = torch.nn.Dropout(p=dropout_p)
+
+    def forward(self, x):
+        output = F.relu(self.w_0(self.emb_dropout(x).transpose(1, 2)))
+        output = self.dropout(output)
+        output = self.w_1(output)
+        output = output.transpose(2, 1)
+        return output
+
+
+class Encoder(torch.nn.Module):
+    def __init__(self, input_size, hidden_size, hidden_mode, emb_dropout_p, dropout_p):
+        super(Encoder, self).__init__()
+        # self.pos_nn = PositionwiseNN(input_size, hidden_size, emb_dropout_p, dropout_p)
+        self.encoder_rnn1 = MyRNNBase(mode=hidden_mode,
+                                      input_size=input_size,
+                                      hidden_size=hidden_size,
+                                      bidirectional=True,
+                                      dropout_p=emb_dropout_p)
+        self.encoder_rnn2 = MyRNNBase(mode=hidden_mode,
+                                      input_size=hidden_size,
+                                      hidden_size=hidden_size,
+                                      bidirectional=True,
+                                      dropout_p=dropout_p)
+
+    def forward(self, seq_vec, seq_mask):
+        # pos_out = self.pos_nn(seq_vec.transpose(0, 1)).transpose(0, 1)
+        seq_enc_1, _ = self.encoder_rnn1(seq_vec, seq_mask)
+        shape = seq_enc_1.shape
+        seq_enc_1 = seq_enc_1.view(shape[0], shape[1], shape[2] // 2, 2).max(-1)[0]
+
+        seq_enc_2, _ = self.encoder_rnn2(seq_enc_1, seq_mask)
+        seq_enc_2 = seq_enc_2.view(shape[0], shape[1], shape[2] // 2, 2).max(-1)[0]
+
+        return torch.cat([seq_enc_1, seq_enc_2], dim=-1), 1
+
+
+class SelfAttention(torch.nn.Module):
+    """
+    SelfAttention for pointer net init hidden state generate.
+    Args:
+        input_size: The number of expected features in the input uq
+        output_size: The number of expected features in the output rq_o
+
+    Inputs: input, mask
+        - **input** (seq_len, batch, input_size): tensor containing the features
+          of the input sequence.
+        - **mask** (batch, seq_len): tensor show whether a padding index for each element in the batch.
+
+    Outputs: output
+        - **output** (batch, output_size): tensor containing the output features
+    """
+
+    def __init__(self, input_size, output_size):
+        super(SelfAttention, self).__init__()
+
+        self.linear_u = torch.nn.Linear(input_size, output_size)
+        self.linear_t = torch.nn.Linear(output_size, 1)
+
+    def forward(self, uq, mask):
+        q_tanh = F.tanh(self.linear_u(uq))
+        q_s = self.linear_t(q_tanh) \
+            .squeeze(2) \
+            .transpose(0, 1)  # (batch, seq_len)
+
+        alpha = masked_softmax(q_s, mask, dim=1)  # (batch, seq_len)
+        rq = torch.bmm(alpha.unsqueeze(1), uq.transpose(0, 1)) \
+            .squeeze(1)  # (batch, input_size)
+
+        return rq
+
+
+class BilinearFlatSim(torch.nn.Module):
+    def __init__(self, x_size, y_size, dropout_p):
+        super(BilinearFlatSim, self).__init__()
+        self.linear = torch.nn.Linear(y_size, x_size)
+        self.dropout = torch.nn.Dropout(dropout_p)
+
+    def forward(self, x, y, x_mask):
+        x = self.dropout(x)
+        y = self.dropout(y)
+
+        Wy = self.linear(y)
+        xWy = x.bmm(Wy.unsqueeze(2)).squeeze(2)     # (batch, x_len)
+        alpha = masked_softmax(xWy, x_mask, dim=1)
+
+        return alpha
+
+
+class SANAnswer(torch.nn.Module):
+
+    def __init__(self, qus_size, ct_size, hidden_size, dropout_p, num_step=5):
+        super(SANAnswer, self).__init__()
+        self.num_step = num_step
+        self.dropout_p = dropout_p
+
+        self.qus_atten = SelfAttention(qus_size, hidden_size)
+        self.beta_bl = BilinearFlatSim(ct_size, qus_size, dropout_p)
+        self.s_bl = BilinearFlatSim(ct_size, qus_size, dropout_p)
+        self.e_bl = BilinearFlatSim(ct_size, qus_size + ct_size, dropout_p)
+
+        self.rnn = torch.nn.GRUCell(qus_size, ct_size)
+        self.dropout = torch.nn.Dropout(dropout_p)
+
+    def forward(self, h_q, q_mask, h_m, m_mask):
+        h_m = h_m.transpose(0, 1)   # (batch, ct_len, ct_size)
+
+        s_t = self.qus_atten(h_q, q_mask)   # (batch, qus_size)
+
+        start_scores = []
+        end_scores = []
+        for t in range(self.num_step):
+            beta = self.beta_bl(h_m, s_t, m_mask)   # (batch, ct_len)
+            x_t = torch.bmm(beta.unsqueeze(1), h_m).squeeze(1)  # (batch, ct_size)
+
+            x_t = self.dropout(x_t)
+            s_t = self.dropout(s_t)
+            s_t = self.rnn(s_t, x_t)
+
+            start_p = self.s_bl(h_m, s_t, m_mask)   # (batch, ct_len)
+            end_s = torch.cat([s_t,
+                               torch.bmm(start_p.unsqueeze(1),
+                                         h_m).squeeze(1)],
+                              dim=1)        # (batch, ct_size+qus_size)
+            end_p = self.e_bl(h_m, end_s, m_mask)
+
+            if not self.training or torch.rand(1).item() > self.dropout_p:
+                start_scores.append(start_p)
+            if not self.training or torch.rand(1).item() > self.dropout_p:
+                end_scores.append(end_p)
+
+        if len(start_scores) == 0:
+            s_p = start_p
+        else:
+            start_scores = torch.stack(start_scores, dim=1)
+            s_p = start_scores.mean(dim=1)
+
+        if len(end_scores) == 0:
+            e_p = end_p
+        else:
+            end_scores = torch.stack(end_scores, dim=1)
+            e_p = end_scores.mean(dim=1)
+
+        ans_range_p = torch.stack([s_p, e_p], dim=0)    # (ans_len, batch, seq_len)
+        ans_range_p = ans_range_p.clamp(min=1e-20)
+
+        return ans_range_p
