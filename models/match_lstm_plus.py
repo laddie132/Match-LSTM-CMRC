@@ -110,7 +110,7 @@ class MatchLSTMPlus(torch.nn.Module):
         qt_aware_ct_ag, _ = self.birnn_after_self.forward(qt_aware_ct, context_mask)
 
         # pointer net init hidden: (batch, hidden_size)
-        ptr_net_hidden = F.tanh(self.init_ptr_hidden.forward(qt_aware_last_hidden))
+        ptr_net_hidden = torch.tanh(self.init_ptr_hidden.forward(qt_aware_last_hidden))
 
         # pointer net: (answer_len, batch, context_len)
         ans_range_prop = self.pointer_net.forward(qt_aware_ct_ag, context_mask, ptr_net_hidden)

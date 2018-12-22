@@ -78,7 +78,7 @@ class MatchRNNAttention(torch.nn.Module):
         wq_hq = self.linear_wq(Hq)  # (question_len, batch, hidden_size)
         wp_hp = self.linear_wp(Hpi).unsqueeze(0)  # (1, batch, hidden_size)
         wr_hr = self.linear_wr(Hr_last).unsqueeze(0)  # (1, batch, hidden_size)
-        G = F.tanh(wq_hq + wp_hp + wr_hr)  # (question_len, batch, hidden_size), auto broadcast
+        G = torch.tanh(wq_hq + wp_hp + wr_hr)  # (question_len, batch, hidden_size), auto broadcast
         wg_g = self.linear_wg(G) \
             .squeeze(2) \
             .transpose(0, 1)  # (batch, question_len)
@@ -164,7 +164,7 @@ class UniMatchRNN(torch.nn.Module):
 
             # gated
             if self.gated_attention:
-                gate = F.sigmoid(self.gated_linear.forward(cur_z))
+                gate = torch.sigmoid(self.gated_linear.forward(cur_z))
                 vis_gated.append(gate.squeeze(-1))
                 cur_z = gate * cur_z
 
@@ -275,7 +275,7 @@ class PointerAttention(torch.nn.Module):
     def forward(self, Hr, Hr_mask, Hk_pre):
         wr_hr = self.linear_wr(Hr)  # (context_len, batch, hidden_size)
         wa_ha = self.linear_wa(Hk_pre).unsqueeze(0)  # (1, batch, hidden_size)
-        f = F.tanh(wr_hr + wa_ha)  # (context_len, batch, hidden_size)
+        f = torch.tanh(wr_hr + wa_ha)  # (context_len, batch, hidden_size)
 
         beta_tmp = self.linear_wf(f) \
             .squeeze(2) \
@@ -605,7 +605,7 @@ class AttentionPooling(torch.nn.Module):
         self.linear_o = torch.nn.Linear(input_size, output_size)
 
     def forward(self, uq, mask):
-        q_tanh = F.tanh(self.linear_u(uq))
+        q_tanh = torch.tanh(self.linear_u(uq))
         q_s = self.linear_t(q_tanh) \
             .squeeze(2) \
             .transpose(0, 1)  # (batch, seq_len)
@@ -614,7 +614,7 @@ class AttentionPooling(torch.nn.Module):
         rq = torch.bmm(alpha.unsqueeze(1), uq.transpose(0, 1)) \
             .squeeze(1)  # (batch, input_size)
 
-        rq_o = F.tanh(self.linear_o(rq))  # (batch, output_size)
+        rq_o = torch.tanh(self.linear_o(rq))  # (batch, output_size)
         return rq_o
 
 
@@ -642,7 +642,7 @@ class SelfAttentionGated(torch.nn.Module):
         self.linear_t = torch.nn.Linear(input_size, 1)
 
     def forward(self, x, x_mask):
-        g_tanh = F.tanh(self.linear_g(x))
+        g_tanh = torch.tanh(self.linear_g(x))
         gt = self.linear_t.forward(g_tanh) \
             .squeeze(2) \
             .transpose(0, 1)  # (batch, seq_len)
@@ -666,7 +666,7 @@ class SelfGated(torch.nn.Module):
 
     def forward(self, x):
         x_l = self.linear_g(x)  # (seq_len, batch, input_size)
-        x_gt = F.sigmoid(x_l)
+        x_gt = torch.sigmoid(x_l)
 
         x = x * x_gt
 
@@ -759,8 +759,8 @@ class SFU(torch.nn.Module):
     def forward(self, input, fusions):
         m = torch.cat((input, fusions), dim=-1)
 
-        r = F.tanh(self.linear_r(m))  # (seq_len, batch, input_size)
-        g = F.sigmoid(self.linear_g(m))  # (seq_len, batch, input_size)
+        r = torch.tanh(self.linear_r(m))  # (seq_len, batch, input_size)
+        g = torch.sigmoid(self.linear_g(m))  # (seq_len, batch, input_size)
         o = g * r + (1 - g) * input
 
         return o
@@ -896,7 +896,7 @@ class LinearLogSoftmax(torch.nn.Module):
         self.linear_o = torch.nn.Linear(input_size, 1)
 
     def forward(self, x):
-        r = F.tanh(self.linear_r(x))
+        r = torch.tanh(self.linear_r(x))
         o_linear = self.linear_o(r).squeeze(-1).transpose(0, 1)  # (batch, k)
         o = F.log_softmax(o_linear, dim=-1)
 
@@ -927,8 +927,8 @@ class AnswerQuestionSimilar(torch.nn.Module):
 
         ans_context = start_context + end_context  # (batch, input_size)
 
-        sim_hidden = F.tanh(self.linear_ct(ans_context) + self.linear_qus(question_last))  # (batch, hidden_size)
-        sim = F.sigmoid(self.linear_sim(sim_hidden)).squeeze(1)  # (batch,)
+        sim_hidden = torch.tanh(self.linear_ct(ans_context) + self.linear_qus(question_last))  # (batch, hidden_size)
+        sim = torch.sigmoid(self.linear_sim(sim_hidden)).squeeze(1)  # (batch,)
 
         return sim
 
@@ -999,7 +999,7 @@ class SelfAttention(torch.nn.Module):
         self.linear_t = torch.nn.Linear(output_size, 1)
 
     def forward(self, uq, mask):
-        q_tanh = F.tanh(self.linear_u(uq))
+        q_tanh = torch.tanh(self.linear_u(uq))
         q_s = self.linear_t(q_tanh) \
             .squeeze(2) \
             .transpose(0, 1)  # (batch, seq_len)
